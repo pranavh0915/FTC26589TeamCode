@@ -1,0 +1,28 @@
+
+Step 1: Check System Requirements
+
+Make sure your computer meets the minimum hardware requirements before installing:
+• Operating System: Windows (64-bit 10 or 11), macOS, Linux, or ChromeOS.
+• Memory (RAM): At least 8 GB of RAM (16 GB is recommended for a smooth experience).
+• Storage: At least 8 GB of free disk space (more is needed if you install multiple emulators and SDK components).
+
+Step 2: Download the Installer
+
+• Go to the official Android Studio Install Page.
+• Read and accept the Android Software License Agreement.
+• Click the download button to save the installer file (roughly 1 GB to 1.3 GB) to your computer.
+
+Step 3: Run the Setup Wizard
+
+• Launch the installer: Double-click the downloaded file (.exe on Windows, .dmg on Mac) and grant administrator permissions if prompted.
+• Follow the wizard: Click Next through the setup steps.
+• Select components: Ensure both Android Studio and Android Virtual Device (AVD) are checked if you want to use the built-in phone emulator.
+• Choose install type: When the initial launch wizard starts up, select the Standard setup type.
+• Download SDK components: Allow the wizard to download the necessary Android SDK, emulator tools, and APIs (this requires an active internet connection and can take a few minutes depending on your speed).
+• Finish: Click Finish once all components are unpacked and installed.
+
+Step 4: Create Your First Project
+
+• Open Android Studio and select New Project.
+• Choose a template (such as Empty Activity or Navigation UI Activity).
+• Select your programming language (Kotlin or Java) and minimum SDK version, then click Finish to build your first project workspace.
