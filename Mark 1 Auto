@@ -1,0 +1,567 @@
+package org.firstinspires.ftc.teamcode;
+
+
+import android.graphics.Color;
+import android.util.Size;
+
+
+import com.qualcomm.hardware.rev.RevColorSensorV3;
+import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
+import com.qualcomm.robotcore.hardware.NormalizedRGBA;
+
+
+import org.firstinspires.ftc.robotcore.external.hardware.camera.WebcamName;
+import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
+import org.firstinspires.ftc.vision.VisionPortal;
+import org.firstinspires.ftc.vision.apriltag.AprilTagDetection;
+import org.firstinspires.ftc.vision.apriltag.AprilTagProcessor;
+import org.firstinspires.ftc.vision.apriltag.AprilTagSingleDetection;
+
+
+import java.util.List;
+import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorEx;
+import com.qualcomm.robotcore.hardware.IMU;
+import com.qualcomm.robotcore.hardware.PwmControl;
+import com.qualcomm.robotcore.hardware.Servo;
+import com.qualcomm.robotcore.hardware.ServoImplEx;
+import com.qualcomm.robotcore.util.ElapsedTime;
+
+
+import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
+
+
+@TeleOp(name = "Mecanum Drive + Flywheel StarterKit", group = "Drive")
+public class MecanumAuto extends LinearOpMode {
+
+
+    
+// =========================
+    // DRIVE MOTORS
+    // =========================
+    private DcMotor frontLeft;
+    private DcMotor frontRight;
+    private DcMotor backLeft;
+    private DcMotor backRight;
+
+
+    
+// =========================
+    // MECHANISM MOTORS
+    // =========================
+    private DcMotor intakeMotor;
+    private DcMotorEx flywheelMotor;
+
+
+    
+// =========================
+    // SERVOS
+    // =========================
+    private Servo leftSideServo;
+    private Servo rightSideServo;
+    private ServoImplEx aggregator;  
+// Pushes balls into the flywheel (300 degree servo)
+    // =========================
+    // IMU
+    // =========================
+    private IMU imu;
+
+
+    
+// =========================
+    // CAMERA (AprilTag aim assist) + COLOR SENSOR
+    // =========================
+    // Set to false to run without that device (it will not be looked up in the hardware map).
+    private static final boolean USE_CAMERA = true;
+    private static final boolean USE_COLOR_SENSOR = true;
+
+
+    private VisionPortal visionPortal;
+    private AprilTagProcessor aprilTag;
+    private RevColorSensorV3 colorSensor;
+
+
+    
+// Aim assist: HOLD gamepad1 DPAD DOWN. The robot turns itself to center the goal tag
+    // while you keep driving with the left stick.
+    // Alliance: gamepad2 X = BLUE goal (tag 20), gamepad2 B = RED goal (tag 24).
+    private static final int BLUE_GOAL_TAG = 20;
+    private static final int RED_GOAL_TAG = 24;
+    private int goalTagId = BLUE_GOAL_TAG;
+    private static final double AIM_OFFSET_DEG = 0.0;     
+// trim if shots land left/right
+    private static final double AIM_TOLERANCE_DEG = 1.5;
+    private static final double KP_AIM = 1.2;             
+// power per radian of bearing error
+    private static final double AIM_MIN_POWER = 0.10;
+    private static final double AIM_MAX_POWER = 0.50;
+
+
+    
+// Color sensor ball counter. Counts balls while you hold the intake (gamepad1 A),
+    // subtracts one per aggregator shot, and resets with gamepad1 BACK.
+    private static final float COLOR_GAIN = 2.0f;
+    private static final double BALL_NEAR_CM = 4.0;       
+// ball "seen" closer than this (tune!)
+    private static final double BALL_HYSTERESIS_CM = 1.5;
+    private int ballCount = 0;
+    private boolean ballPresent = false;
+    private double ballDistanceCm = 0;
+    private String lastBallColor = "none";
+
+
+    
+// =========================
+    // SERVO POSITIONS
+    // =========================
+    private static final double LEFT_RETRACTED = 0.10;
+    private static final double LEFT_DEPLOYED  = 0.75;
+
+
+    private static final double RIGHT_RETRACTED = 0.90;
+    private static final double RIGHT_DEPLOYED  = 0.25;
+
+
+    
+// =========================
+    // AGGREGATOR SETTINGS (300 degree paddle)
+    // =========================
+    // Total rotation range of the aggregator servo (300 for goBILDA torque/speed servos).
+    private static final double SERVO_RANGE_DEG = 300.0;
+
+
+    
+// goBILDA 300 degree servos need the wider pulse range to reach the full 300 degrees.
+    // Set USE_WIDE_PWM = false if your servo is not a goBILDA 300 degree servo.
+    private static final boolean USE_WIDE_PWM = true;
+    private static final int PWM_MIN_US = 500;
+    private static final int PWM_MAX_US = 2500;
+
+
+    
+// Paddle angles in DEGREES (0 = servo's 0 position). Tune with gamepad2 (see below).
+    private double aggRestDeg = 0.0;     
+// Paddle parked
+    private double aggPushDeg = 300.0;   
+// Paddle swings the full 300 degrees
+    // How long (seconds) the paddle needs to physically travel. Tune these!
+    private static final double AGG_PUSH_TIME   = 0.80;  
+// Swing forward + hold
+    private static final double AGG_RETURN_TIME = 0.80;  
+// Swing back + ball loads
+    // false = aggregator fires any time you press the button (best for testing).
+    // true  = only fires when the flywheel is up to speed.
+    private static final boolean REQUIRE_FLYWHEEL_AT_SPEED = false;
+
+
+    private double degToPos(double deg) {
+        return Math.max(0.0, Math.min(1.0, deg / SERVO_RANGE_DEG));
+    }
+
+
+    private enum AggState { IDLE, PUSHING, RETURNING }
+    private AggState aggState = AggState.IDLE;
+    private final ElapsedTime aggTimer = new ElapsedTime();
+    private boolean lastUp, lastDown, lastLeft, lastRight;
+
+
+    
+// Aggregator power toggle (gamepad1 DPAD UP). Starts OFF so it does not move on its own.
+    private boolean aggPowered = false;
+    private boolean lastAggToggle = false;
+
+
+    
+// =========================
+    // FLYWHEEL SETTINGS
+    // =========================
+    private static final double FLYWHEEL_TARGET_VELOCITY = 1500.0;
+    private static final double VELOCITY_TOLERANCE       = 100.0;
+
+
+    
+/** Returns the detection with this id that has pose data, or null. */
+    private AprilTagSingleDetection findTag(int id) {
+        if (aprilTag == null) return null;
+        List<AprilTagDetection> detections = aprilTag.getDetections();
+        for (AprilTagDetection d : detections) {
+            if (d instanceof AprilTagSingleDetection) {
+                AprilTagSingleDetection single = (AprilTagSingleDetection) d;
+                if (single.id == id && single.metadata != null && single.ftcPose != null) return single;
+            }
+        }
+        return null;
+    }
+
+
+    
+/** Rough GREEN / PURPLE classification from hue. TUNE the hue ranges with your balls and lighting. */
+    private String classifyColor() {
+        NormalizedRGBA c = colorSensor.getNormalizedColors();
+        float[] hsv = new float[3];
+        Color.colorToHSV(c.toColor(), hsv);
+        float hue = hsv[0], sat = hsv[1];
+        if (sat < 0.25f) return "UNKNOWN";
+        if (hue >= 90 && hue <= 180) return "GREEN";
+        if (hue >= 200 && hue <= 320) return "PURPLE";
+        return "UNKNOWN";
+    }
+
+
+    
+@Override
+    public void runOpMode() {
+
+
+        
+// =========================
+        // HARDWARE MAP
+        // =========================
+        frontLeft   = hardwareMap.get(DcMotor.class, "frontLeft");
+        frontRight  = hardwareMap.get(DcMotor.class, "frontRight");
+        backLeft    = hardwareMap.get(DcMotor.class, "backLeft");
+        backRight   = hardwareMap.get(DcMotor.class, "backRight");
+
+
+        intakeMotor   = hardwareMap.get(DcMotor.class, "intakeMotor");
+        flywheelMotor = hardwareMap.get(DcMotorEx.class, "shooterMotor");
+
+
+        leftSideServo  = hardwareMap.get(Servo.class, "leftSideServo");
+        rightSideServo = hardwareMap.get(Servo.class, "rightSideServo");
+        aggregator     = hardwareMap.get(ServoImplEx.class, "aggregator"); 
+// must be a normal "Servo" in Robot Config
+        // =========================
+        // MOTOR CONFIGURATION
+        // =========================
+        frontLeft.setDirection(DcMotor.Direction.REVERSE);
+        backLeft.setDirection(DcMotor.Direction.REVERSE);
+        intakeMotor.setDirection(DcMotor.Direction.FORWARD);
+        flywheelMotor.setDirection(DcMotorEx.Direction.FORWARD);
+
+
+        frontLeft.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        frontRight.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        backLeft.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        backRight.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+
+
+        frontLeft.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+        frontRight.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+        backLeft.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+        backRight.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+
+
+        intakeMotor.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+
+
+        flywheelMotor.setMode(DcMotorEx.RunMode.RUN_USING_ENCODER);
+        flywheelMotor.setVelocity(0);
+
+
+        
+// =========================
+        // SERVO INITIALIZATION
+        // =========================
+        leftSideServo.setPosition(LEFT_RETRACTED);
+        rightSideServo.setPosition(RIGHT_RETRACTED);
+        if (USE_WIDE_PWM) {
+            aggregator.setPwmRange(new PwmControl.PwmRange(PWM_MIN_US, PWM_MAX_US));
+        }
+        aggregator.setDirection(Servo.Direction.FORWARD); 
+// change to REVERSE if it swings the wrong way
+        aggregator.setPwmDisable();   
+// no power to the aggregator until you press DPAD UP
+        // =========================
+        // IMU INITIALIZATION
+        // =========================
+        imu = hardwareMap.get(IMU.class, "imu");
+        imu.initialize(
+                new IMU.Parameters(
+                        new RevHubOrientationOnRobot(
+                                RevHubOrientationOnRobot.LogoFacingDirection.UP,
+                                RevHubOrientationOnRobot.UsbFacingDirection.
+FORWARD
+                        )
+                )
+        );
+        imu.resetYaw();
+
+
+        
+// =========================
+        // CAMERA + COLOR SENSOR INITIALIZATION
+        // =========================
+        if (USE_COLOR_SENSOR) {
+            colorSensor = hardwareMap.get(RevColorSensorV3.class, "colorSensor");
+            colorSensor.setGain(COLOR_GAIN);
+        }
+        if (USE_CAMERA) {
+            aprilTag = new AprilTagProcessor.Builder()
+                    .setDrawTagID(true)
+                    .setDrawTagOutline(true)
+                    .build();
+            visionPortal = new VisionPortal.Builder()
+                    .setCamera(hardwareMap.get(WebcamName.class, "Webcam 1"))
+                    .setCameraResolution(new Size(640, 480))
+                    .addProcessor(aprilTag)
+                    .build();
+        }
+
+
+        telemetry.addLine("Mecanum + Flywheel + Aggregator Ready!");
+        telemetry.update();
+
+
+        waitForStart();
+
+
+        while (opModeIsActive()) {
+
+
+            
+// =====================================================
+            // 1. MECANUM DRIVE
+            // =====================================================
+            double y  = -gamepad1.left_stick_y;
+            double x  = gamepad1.left_stick_x;
+            double rx = gamepad1.right_stick_x;
+
+
+            
+// ---- Alliance select (gamepad2): X = BLUE goal, B = RED goal ----
+            if (gamepad2.x) goalTagId = BLUE_GOAL_TAG;
+            else if (gamepad2.b) goalTagId = RED_GOAL_TAG;
+
+
+            
+// ---- AprilTag aim assist: HOLD gamepad1 DPAD DOWN ----
+            // Overrides only the turn; you still drive with the left stick.
+            boolean aimAssist = USE_CAMERA && gamepad1.dpad_down;
+            boolean aimed = false;
+            String aimStatus = aimAssist ? "no goal tag seen" : "off";
+            if (aimAssist) {
+                AprilTagSingleDetection tag = findTag(goalTagId);
+                if (tag != null) {
+                    
+// Positive bearing = tag is LEFT of center, so we turn counterclockwise.
+                    double bearingDeg = tag.ftcPose.bearing + AIM_OFFSET_DEG;
+                    aimed = Math.abs(bearingDeg) < AIM_TOLERANCE_DEG;
+                    aimStatus = String.format("tag %d bearing %.1f deg, range %.1f in",
+                            tag.id, bearingDeg, tag.ftcPose.range);
+                    if (aimed) {
+                        rx = 0;
+                    } else {
+                        double ccwTurn = KP_AIM * Math.toRadians(bearingDeg);
+                        double mag = Math.max(AIM_MIN_POWER, Math.min(AIM_MAX_POWER, Math.abs(ccwTurn)));
+                        
+// In this drive mixing, positive rx = clockwise, so flip the sign.
+                        rx = -Math.copySign(mag, ccwTurn);
+                    }
+                }
+            }
+
+
+            double speed = gamepad1.right_bumper ? 0.35 : 1.0;
+
+
+            double frontLeftPower  = y + x + rx;
+            double backLeftPower   = y - x + rx;
+            double frontRightPower = y - x - rx;
+            double backRightPower  = y + x - rx;
+
+
+            double max = Math.max(1.0, Math.max(Math.abs(frontLeftPower),
+                    Math.max(Math.abs(backLeftPower),
+                            Math.max(Math.abs(frontRightPower), Math.abs(backRightPower)))));
+
+
+            frontLeft.setPower((frontLeftPower / max) * speed);
+            backLeft.setPower((backLeftPower / max) * speed);
+            frontRight.setPower((frontRightPower / max) * speed);
+            backRight.setPower((backRightPower / max) * speed);
+
+
+            
+// =====================================================
+            // 2. INTAKE CONTROL
+            // =====================================================
+            if (gamepad1.a) {
+                intakeMotor.setPower(1.0);
+            } else if (gamepad1.b) {
+                intakeMotor.setPower(-1.0);
+            } else {
+                intakeMotor.setPower(0.0);
+            }
+
+
+            
+// =====================================================
+            // 3. FLYWHEEL CONTROL (Velocity PID)
+            // =====================================================
+            boolean revFlywheel = gamepad1.right_trigger > 0.1;
+            flywheelMotor.setVelocity(revFlywheel ? FLYWHEEL_TARGET_VELOCITY : 0);
+
+
+            double currentVelocity = flywheelMotor.getVelocity();
+            boolean isAtSpeed = revFlywheel
+                    && Math.abs(FLYWHEEL_TARGET_VELOCITY - currentVelocity) < VELOCITY_TOLERANCE;
+
+
+            
+// =====================================================
+            // 4. AGGREGATOR (swings the paddle 300 degrees to push balls into the flywheel)
+            //    Hold LEFT TRIGGER or LEFT BUMPER = shoot (repeats one ball per cycle)
+            //    Set REQUIRE_FLYWHEEL_AT_SPEED = true to only fire when the flywheel is ready.
+            // =====================================================
+            // ---- Power toggle: press gamepad1 DPAD UP to turn aggregator power ON / OFF ----
+            if (gamepad1.dpad_up && !lastAggToggle) {
+                aggPowered = !aggPowered;
+                if (aggPowered) {
+                    aggregator.setPwmEnable();      
+// supply power
+                } else {
+                    aggregator.setPwmDisable();     
+// cut power (servo goes limp / stops)
+                    aggState = AggState.IDLE;       
+// cancel any swing in progress
+                }
+            }
+            lastAggToggle = gamepad1.dpad_up;
+
+
+            boolean shootRequested = gamepad1.left_trigger > 0.1 || gamepad1.left_bumper;
+            boolean canFire = aggPowered && (!REQUIRE_FLYWHEEL_AT_SPEED || isAtSpeed);
+
+
+            switch (aggState) {
+                case IDLE:
+                    if (aggPowered) aggregator.setPosition(degToPos(aggRestDeg));
+                    if (shootRequested && canFire) {
+                        aggregator.setPosition(degToPos(aggPushDeg));
+                        aggTimer.reset();
+                        aggState = AggState.PUSHING;
+                    }
+                    break;
+
+
+                case PUSHING:
+                    
+// Always finish the push so the ball fully clears
+                    if (aggTimer.seconds() >= AGG_PUSH_TIME) {
+                        aggregator.setPosition(degToPos(aggRestDeg));
+                        aggTimer.reset();
+                        aggState = AggState.RETURNING;
+                    }
+                    break;
+
+
+                case RETURNING:
+                    
+// Wait for servo to return so the next ball can load
+                    if (aggTimer.seconds() >= AGG_RETURN_TIME) {
+                        if (ballCount > 0) ballCount--;   
+// one ball left the robot
+                        aggState = AggState.IDLE;
+                    }
+                    break;
+            }
+
+
+            
+// ---- Live tuning of paddle angles (gamepad2) ----
+            // dpad up/down = push angle +/- 5 deg    dpad right/left = rest angle +/- 5 deg
+            if (aggState == AggState.IDLE) {
+                if (gamepad2.dpad_up    && !lastUp)    aggPushDeg += 5;
+                if (gamepad2.dpad_down  && !lastDown)  aggPushDeg -= 5;
+                if (gamepad2.dpad_right && !lastRight) aggRestDeg += 5;
+                if (gamepad2.dpad_left  && !lastLeft)  aggRestDeg -= 5;
+                aggPushDeg = Math.max(0, Math.min(SERVO_RANGE_DEG, aggPushDeg));
+                aggRestDeg = Math.max(0, Math.min(SERVO_RANGE_DEG, aggRestDeg));
+            }
+            lastUp = gamepad2.dpad_up;     lastDown = gamepad2.dpad_down;
+            lastLeft = gamepad2.dpad_left; lastRight = gamepad2.dpad_right;
+
+
+            
+// =====================================================
+            // 5. SIDE RETRIEVAL SERVOS
+            // =====================================================
+            if (gamepad1.dpad_left) {
+                leftSideServo.setPosition(LEFT_DEPLOYED);
+                rightSideServo.setPosition(RIGHT_DEPLOYED);
+            } else if (gamepad1.dpad_right) {
+                leftSideServo.setPosition(LEFT_RETRACTED);
+                rightSideServo.setPosition(RIGHT_RETRACTED);
+            }
+
+
+            if (gamepad1.x) {
+                leftSideServo.setPosition(LEFT_DEPLOYED);
+            }
+            if (gamepad1.y) {
+                rightSideServo.setPosition(RIGHT_DEPLOYED);
+            }
+
+
+            
+// =====================================================
+            // TELEMETRY
+            // =====================================================
+            // ---- Color sensor: count balls going in while the intake is held ----
+            if (USE_COLOR_SENSOR) {
+                ballDistanceCm = colorSensor.getDistance(DistanceUnit.CM);
+                if (!ballPresent && ballDistanceCm < BALL_NEAR_CM) {
+                    ballPresent = true;
+                    lastBallColor = classifyColor();
+                    if (gamepad1.a) ballCount++;
+                } else if (ballPresent && ballDistanceCm > BALL_NEAR_CM + BALL_HYSTERESIS_CM) {
+                    ballPresent = false;
+                }
+                if (gamepad1.back) ballCount = 0;
+            }
+
+
+            double heading = imu.getRobotYawPitchRollAngles().getYaw(AngleUnit.DEGREES);
+
+
+            telemetry.addData("--- FLYWHEEL ---", "");
+            telemetry.addData("Flywheel Velocity", "%.0f / %.0f ticks/sec", currentVelocity, FLYWHEEL_TARGET_VELOCITY);
+            telemetry.addData("Flywheel Ready?", isAtSpeed ? "READY TO SHOOT" : "SPINNING UP / OFF");
+
+
+            telemetry.addData("--- AGGREGATOR ---", "");
+            telemetry.addData("Aggregator Power (DPAD UP)", aggPowered ? "ON" : "OFF");
+            telemetry.addData("State", aggState);
+            telemetry.addData("Shoot Requested", shootRequested);
+            telemetry.addData("Can Fire", canFire);
+            telemetry.addData("Rest / Push (deg)", "%.0f / %.0f", aggRestDeg, aggPushDeg);
+            telemetry.addData("Servo Position", "%.2f", aggregator.getPosition());
+
+
+            telemetry.addData("--- DRIVE & IMU ---", "");
+            telemetry.addData("Heading", "%.1f deg", heading);
+
+
+            if (USE_CAMERA) {
+                telemetry.addData("--- AIM ASSIST (hold DPAD DOWN) ---", "");
+                telemetry.addData("Goal", (goalTagId == BLUE_GOAL_TAG ? "BLUE" : "RED")
+                        + " (gamepad2 X = blue, B = red)");
+                telemetry.addData("Aim", aimed ? "AIMED - SHOOT!" : aimStatus);
+            }
+            if (USE_COLOR_SENSOR) {
+                telemetry.addData("--- BALLS (BACK = reset) ---", "");
+                telemetry.addData("Ball count", ballCount);
+                telemetry.addData("Ball sensor", "%.1f cm, last color %s", ballDistanceCm, lastBallColor);
+            }
+
+
+            telemetry.update();
+        }
+
+
+        if (visionPortal != null) visionPortal.close();
+    }
+}
